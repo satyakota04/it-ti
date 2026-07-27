@@ -406,16 +406,13 @@ pipeline:
                   identifier: print_cg_contents
                   spec:
                     connectorRef: testingggg
-                    image: maven:3.9-eclipse-temurin-17
+                    image: python:3.12-slim
                     shell: Sh
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      echo "=== Final unified call graph ==="
                       find "$TI_BASE" -type f -name 'unified-cg-*.ndjson' 2>/dev/null | sort | while IFS= read -r f; do
-                        echo "----- $f -----"
                         python3 -m json.tool "$f"
-                        echo ""
                       done
           buildIntelligence:
             enabled: false
