@@ -238,44 +238,19 @@ pipeline:
                       done || echo "(none)"
               - step:
                   type: Run
-                  name: Print CG file contents
+                  name: Print unified CG
                   identifier: print_cg_contents
                   spec:
                     connectorRef: testingggg
-                    image: eclipse-temurin:17-jre
+                    image: maven:3.9-eclipse-temurin-17
                     shell: Sh
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      echo "=== Agent log files (sizes) ==="
-                      find "$TI_BASE" -name "*.log" -type f 2>/dev/null | while IFS= read -r f; do
-                        SIZE=$(wc -c < "$f" | tr -d ' ')
-                        LINES=$(wc -l < "$f" | tr -d ' ')
-                        echo "  $f  ($SIZE bytes, $LINES lines)"
-                      done
-                      echo ""
-                      echo "=== CG file contents (non-empty files, pretty-printed) ==="
-                      find "$TI_BASE" -type f \( \
-                          -name 'unified-cg-*.ndjson' \
-                          -o -name 'cg_*.json' \
-                          -o -name 'cg_*.csv' \
-                          -o -name 'cg_*.ndjson' \
-                        \) 2>/dev/null | while IFS= read -r f; do
-                        SIZE=$(wc -c < "$f" | tr -d ' ')
-                        echo "----- $f ($SIZE bytes) -----"
-                        if [ "$SIZE" -eq 0 ]; then
-                          echo "(empty)"
-                        elif echo "$f" | grep -qE '\.(json|ndjson)$'; then
-                          if command -v jq >/dev/null 2>&1; then
-                            jq . "$f" 2>/dev/null || cat "$f"
-                          elif command -v python3 >/dev/null 2>&1; then
-                            python3 -m json.tool "$f" 2>/dev/null || cat "$f"
-                          else
-                            cat "$f"
-                          fi
-                        else
-                          cat "$f"
-                        fi
+                      echo "=== Final unified call graph ==="
+                      find "$TI_BASE" -type f -name 'unified-cg-*.ndjson' 2>/dev/null | sort | while IFS= read -r f; do
+                        echo "----- $f -----"
+                        python3 -m json.tool "$f"
                         echo ""
                       done
           buildIntelligence:
