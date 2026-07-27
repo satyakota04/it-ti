@@ -310,13 +310,18 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      LOG="$TI_BASE/runner/native-agent.log"
-                      echo "=== Runner native-agent.log (size: $(wc -c < "$LOG" 2>/dev/null || echo 0)) ==="
-                      echo "--- Classified / Registering / Stats / RECORD / Collector / X-TI ---"
-                      grep -nE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Collector|Opened call-graph|Enqueue:|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo' "$LOG" 2>/dev/null | head -120
+                      DIR="$TI_BASE/runner"
+                      echo "=== Runner log files ==="
+                      ls -la "$DIR"/*.log 2>/dev/null
                       echo ""
-                      echo "--- Ignored/Instrumenting com.harness (callgraph decisions) ---"
-                      grep -nE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$LOG" 2>/dev/null | head -30
+                      echo "--- Key lines (ALL .log files, excluding Enqueue noise) ---"
+                      grep -rhE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Opened call-graph|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo|collect|Collect' "$DIR"/*.log 2>/dev/null | grep -vE 'Enqueue:' | head -150
+                      echo ""
+                      echo "--- Enqueue count (Collector activity) ---"
+                      grep -rh 'Enqueue:' "$DIR"/*.log 2>/dev/null | wc -l
+                      echo ""
+                      echo "--- Ignored/Instrumenting com.harness ---"
+                      grep -rhE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$DIR"/*.log 2>/dev/null | head -20
                       echo ""
                       echo "=== Surefire dumpstream ==="
                       find /harness/target/surefire-reports -name "*.dumpstream" -type f 2>/dev/null | while IFS= read -r f; do
@@ -334,13 +339,19 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      LOG="$TI_BASE/order/native-agent.log"
-                      echo "=== Order native-agent.log (size: $(wc -c < "$LOG" 2>/dev/null || echo 0)) ==="
-                      echo "--- Classified / Registering / Stats / RECORD / Collector / X-TI ---"
-                      grep -nE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Collector|Opened call-graph|Enqueue:|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo' "$LOG" 2>/dev/null | head -120
+                      DIR="$TI_BASE/order"
+                      echo "=== Order log files ==="
+                      ls -la "$DIR"/*.log 2>/dev/null
                       echo ""
-                      echo "--- Ignored/Instrumenting com.harness (callgraph decisions) ---"
-                      grep -nE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$LOG" 2>/dev/null | head -30
+                      echo "--- Key lines (ALL .log files, excluding Enqueue noise) ---"
+                      grep -rhE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Opened call-graph|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo|collect|Collect' "$DIR"/*.log 2>/dev/null | grep -vE 'Enqueue:' | head -150
+                      echo ""
+                      echo "--- Enqueue count + distinct execution-ids ---"
+                      grep -rh 'Enqueue:' "$DIR"/*.log 2>/dev/null | wc -l
+                      grep -rhoE 'exec [a-f0-9-]+' "$DIR"/*.log 2>/dev/null | sort -u
+                      echo ""
+                      echo "--- Ignored/Instrumenting com.harness ---"
+                      grep -rhE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$DIR"/*.log 2>/dev/null | head -20
               - step:
                   type: Run
                   name: Print inventory logs
@@ -352,13 +363,19 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      LOG="$TI_BASE/inventory/native-agent.log"
-                      echo "=== Inventory native-agent.log (size: $(wc -c < "$LOG" 2>/dev/null || echo 0)) ==="
-                      echo "--- Classified / Registering / Stats / RECORD / Collector / X-TI ---"
-                      grep -nE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Collector|Opened call-graph|Enqueue:|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo' "$LOG" 2>/dev/null | head -120
+                      DIR="$TI_BASE/inventory"
+                      echo "=== Inventory log files ==="
+                      ls -la "$DIR"/*.log 2>/dev/null
                       echo ""
-                      echo "--- Ignored/Instrumenting com.harness (callgraph decisions) ---"
-                      grep -nE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$LOG" 2>/dev/null | head -30
+                      echo "--- Key lines (ALL .log files, excluding Enqueue noise) ---"
+                      grep -rhE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Opened call-graph|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo|collect|Collect' "$DIR"/*.log 2>/dev/null | grep -vE 'Enqueue:' | head -150
+                      echo ""
+                      echo "--- Enqueue count + distinct execution-ids ---"
+                      grep -rh 'Enqueue:' "$DIR"/*.log 2>/dev/null | wc -l
+                      grep -rhoE 'exec [a-f0-9-]+' "$DIR"/*.log 2>/dev/null | sort -u
+                      echo ""
+                      echo "--- Ignored/Instrumenting com.harness ---"
+                      grep -rhE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$DIR"/*.log 2>/dev/null | head -20
               - step:
                   type: Run
                   name: Print shipping logs
@@ -370,13 +387,19 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      LOG="$TI_BASE/shipping/native-agent.log"
-                      echo "=== Shipping native-agent.log (size: $(wc -c < "$LOG" 2>/dev/null || echo 0)) ==="
-                      echo "--- Classified / Registering / Stats / RECORD / Collector / X-TI ---"
-                      grep -nE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Collector|Opened call-graph|Enqueue:|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo' "$LOG" 2>/dev/null | head -120
+                      DIR="$TI_BASE/shipping"
+                      echo "=== Shipping log files ==="
+                      ls -la "$DIR"/*.log 2>/dev/null
                       echo ""
-                      echo "--- Ignored/Instrumenting com.harness (callgraph decisions) ---"
-                      grep -nE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$LOG" 2>/dev/null | head -30
+                      echo "--- Key lines (ALL .log files, excluding Enqueue noise) ---"
+                      grep -rhE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Opened call-graph|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo|collect|Collect' "$DIR"/*.log 2>/dev/null | grep -vE 'Enqueue:' | head -150
+                      echo ""
+                      echo "--- Enqueue count + distinct execution-ids ---"
+                      grep -rh 'Enqueue:' "$DIR"/*.log 2>/dev/null | wc -l
+                      grep -rhoE 'exec [a-f0-9-]+' "$DIR"/*.log 2>/dev/null | sort -u
+                      echo ""
+                      echo "--- Ignored/Instrumenting com.harness ---"
+                      grep -rhE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$DIR"/*.log 2>/dev/null | head -20
               - step:
                   type: Run
                   name: Print CG file contents
