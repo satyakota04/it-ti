@@ -93,6 +93,10 @@ pipeline:
                       # Per-service + runner configs (debug mode: Java logLevel 6 + logConsole true,
                       # native Debug + console true). Revert to logLevel 5 / logConsole false / Information
                       # once CG instrumentation is confirmed working.
+                      # Services: rely on class.prefixes from their jar manifests (META-INF/harness-manifest.properties).
+                      # Runner: test classes load from target/test-classes/ (directory, no manifest) -> classified
+                      # DEPENDENCY and ignored; instrPackages forces instrumentation of com.harness.sample.it.*
+                      # via the matchesIncludes override in CallgraphIgnoreMatcher.
                       for svc in order inventory shipping runner; do
                         mkdir -p "$TI_BASE/$svc/native"
                         cat > "$TI_BASE/$svc/config.ini" <<EOF
@@ -114,6 +118,14 @@ pipeline:
                       }
                       EOF
                       done
+
+                      # Runner-only override: add instrPackages for test classes (loaded from
+                      # target/test-classes dir, no Harness manifest -> need explicit include).
+                      cat >> "$TI_BASE/runner/config.ini" <<EOF
+                      instrPackages: com.harness.sample.it.
+                      EOF
+                      echo "=== Runner config (with instrPackages) ==="
+                      cat "$TI_BASE/runner/config.ini"
 
                       echo "=== Agent artifacts ==="
                       ls -la "$AGENT_JAR" "$NATIVE_SO"
