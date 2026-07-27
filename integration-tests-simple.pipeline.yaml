@@ -1,0 +1,301 @@
+pipeline:
+  tags: {}
+  projectIdentifier: qajt
+  orgIdentifier: default
+  properties:
+    ci:
+      codebase:
+        connectorRef: itcheck
+        repoName: it-ti
+        build: <+input>
+  stages:
+    - stage:
+        name: CI
+        identifier: CI
+        description: Restore jars, download TI agents, run services with agents, run ITs (mirrors run-*.sh)
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: false
+            override: true
+            paths: []
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: deleciplay
+              namespace: harness-delegate-ng
+              automountServiceAccountToken: true
+              nodeSelector: {}
+              os: Linux
+          execution:
+            steps:
+              - step:
+                  type: RestoreCacheS3
+                  name: inventory-service-maven-jar-download
+                  identifier: inventory_service_jar_restore
+                  spec:
+                    connectorRef: awsinteljt
+                    region: us-east-1
+                    bucket: satyakota-test
+                    key: inventory-service-maven
+                    archiveFormat: Tar
+              - step:
+                  type: RestoreCacheS3
+                  name: shipping-service-maven-jar-download
+                  identifier: shipping_service_jar_restore
+                  spec:
+                    connectorRef: awsinteljt
+                    region: us-east-1
+                    bucket: satyakota-test
+                    key: shipping-service-maven
+                    archiveFormat: Tar
+              - step:
+                  type: RestoreCacheS3
+                  name: order-service-jar-download
+                  identifier: order_service_jar_restore
+                  spec:
+                    connectorRef: awsinteljt
+                    region: us-east-1
+                    bucket: satyakota-test
+                    key: order-service
+                    archiveFormat: Tar
+              - step:
+                  type: Run
+                  name: Verify TI agents
+                  identifier: download_ti_agents
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      # Agent artifacts are committed to this repo under ti-agent-artifacts/
+                      # (built via build-linux-agents.sh from the ti-agents source, linux/amd64).
+                      # cloneCodebase: true places them at /harness/ti-agent-artifacts/.
+                      ARTIFACT_DIR=/harness/ti-agent-artifacts
+                      AGENT_JAR="$ARTIFACT_DIR/java-agent-trampoline.jar"
+                      NATIVE_SO="$ARTIFACT_DIR/ti-agent.so"
+
+                      if [ ! -f "$AGENT_JAR" ] || [ ! -f "$NATIVE_SO" ]; then
+                        echo "Missing agent artifacts under $ARTIFACT_DIR" >&2
+                        ls -la "$ARTIFACT_DIR" >&2 || true
+                        exit 1
+                      fi
+
+                      # paths.env is consumed by the service + runner steps below.
+                      mkdir -p /harness/ti-agents
+                      echo "AGENT_JAR=$AGENT_JAR" | tee /harness/ti-agents/paths.env
+                      echo "NATIVE_SO=$NATIVE_SO"  | tee -a /harness/ti-agents/paths.env
+
+                      TI_BASE=/harness/ti-it
+
+                      # Per-service + runner configs — mirrors run-order/inventory/shipping.sh + run-it-ti.sh
+                      # (logLevel 5, logConsole false, native Information, packageInference false)
+                      for svc in order inventory shipping runner; do
+                        mkdir -p "$TI_BASE/$svc/native"
+                        cat > "$TI_BASE/$svc/config.ini" <<EOF
+                      outDir: $TI_BASE/$svc
+                      logLevel: 5
+                      logConsole: false
+                      packageInference: false
+                      EOF
+                        cat > "$TI_BASE/$svc/native-config.json" <<EOF
+                      {
+                        "outdir": "$TI_BASE/$svc/native",
+                        "connectorPath": "$AGENT_JAR",
+                        "logging": {
+                          "level": "Information",
+                          "console": "false",
+                          "file": "true",
+                          "filePath": "$TI_BASE/$svc/native-agent.log"
+                        }
+                      }
+                      EOF
+                      done
+
+                      echo "=== Agent artifacts ==="
+                      ls -la "$AGENT_JAR" "$NATIVE_SO"
+                      ls -la "$TI_BASE"/*/config.ini
+              - step:
+                  type: Background
+                  name: shipping-service
+                  identifier: shipping
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      . /harness/ti-agents/paths.env
+                      export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
+                      export TI_AGENT_CONFIG=/harness/ti-it/shipping/native-config.json
+                      java "-javaagent:${AGENT_JAR}=/harness/ti-it/shipping/config.ini" \
+                        -jar /harness/target/shipping-service-1.0-SNAPSHOT.jar
+              - step:
+                  type: Background
+                  name: inventory-service
+                  identifier: inventory
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      . /harness/ti-agents/paths.env
+                      export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
+                      export TI_AGENT_CONFIG=/harness/ti-it/inventory/native-config.json
+                      java "-javaagent:${AGENT_JAR}=/harness/ti-it/inventory/config.ini" \
+                        -jar /harness/target/inventory-service-1.0-SNAPSHOT.jar
+              - step:
+                  type: Background
+                  name: order-service
+                  identifier: order
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      . /harness/ti-agents/paths.env
+                      export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
+                      export TI_AGENT_CONFIG=/harness/ti-it/order/native-config.json
+                      java "-javaagent:${AGENT_JAR}=/harness/ti-it/order/config.ini" \
+                        -jar /harness/target/order-service-1.0-SNAPSHOT.jar
+              - step:
+                  type: Run
+                  name: Wait and run ITs
+                  identifier: wait_and_run_its
+                  spec:
+                    connectorRef: testingggg
+                    image: maven:3.9-eclipse-temurin-17
+                    shell: Sh
+                    command: |-
+                      set -eu
+
+                      echo "=== Restored jars ==="
+                      ls -la /harness/target/*.jar
+
+                      wait_for() {
+                        name="$1"
+                        url="$2"
+                        i=0
+                        while [ "$i" -lt 60 ]; do
+                          if curl -sf "$url" >/dev/null 2>&1; then
+                            echo "✓ $name ready ($url)"
+                            return 0
+                          fi
+                          i=$((i + 1))
+                          sleep 2
+                        done
+                        echo "✗ $name not ready: $url" >&2
+                        exit 1
+                      }
+
+                      wait_for shipping "http://localhost:8083/eta/TEST-SKU"
+                      wait_for inventory "http://localhost:8082/stock/TEST-SKU"
+
+                      i=0
+                      while [ "$i" -lt 60 ]; do
+                        if curl -sf -X POST "http://localhost:8081/orders" \
+                          -H "Content-Type: application/json" \
+                          -d '{"sku":"TEST","quantity":1}' >/dev/null 2>&1; then
+                          echo "✓ order ready (http://localhost:8081)"
+                          break
+                        fi
+                        i=$((i + 1))
+                        sleep 2
+                      done
+                      if [ "$i" -ge 60 ]; then
+                        echo "✗ order not ready" >&2
+                        exit 1
+                      fi
+
+                      . /harness/ti-agents/paths.env
+                      TI_BASE=/harness/ti-it
+                      RUNNER_DIR="$TI_BASE/runner"
+
+                      # Mirrors run-it-ti.sh: agent on forked surefire JVM via argLine
+                      export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
+                      export TI_AGENT_CONFIG="$RUNNER_DIR/native-config.json"
+
+                      echo "=== Running ITs (run-it-ti.sh pattern) ==="
+                      echo "Agent jar:    $AGENT_JAR"
+                      echo "Native agent: $NATIVE_SO"
+                      echo "Runner cfg:   $RUNNER_DIR/config.ini"
+
+                      cd /harness
+                      TEST_EXIT=0
+                      mvn test \
+                        -DargLine="-javaagent:${AGENT_JAR}=$RUNNER_DIR/config.ini" \
+                        -Dorder.service.url=http://localhost:8081 \
+                        -Dinventory.service.url=http://localhost:8082 \
+                        -Dshipping.service.url=http://localhost:8083 \
+                        || TEST_EXIT=$?
+
+                      if [ "$TEST_EXIT" -eq 0 ]; then
+                        echo "Tests: PASSED"
+                      else
+                        echo "Tests: FAILED (exit $TEST_EXIT)"
+                      fi
+
+                      # Give agents a moment to flush (run-it-ti.sh)
+                      sleep 2
+
+                      echo ""
+                      echo "=== Call-graph output (sizes) ==="
+                      FOUND=0
+                      find "$TI_BASE" -type f \( \
+                          -name 'unified-cg-*.ndjson' \
+                          -o -name 'cg_*.json' \
+                          -o -name 'cg_*.csv' \
+                          -o -name 'cg_*.ndjson' \
+                        \) 2>/dev/null > /tmp/cg-files.txt || true
+
+                      while IFS= read -r f; do
+                        [ -z "$f" ] && continue
+                        FOUND=1
+                        SIZE=$(wc -c < "$f" | tr -d ' ')
+                        echo "  $f"
+                        echo "    size: $SIZE bytes"
+                      done < /tmp/cg-files.txt
+
+                      if [ "$FOUND" -eq 0 ]; then
+                        echo "  (none found under $TI_BASE)"
+                        echo "=== Agent output tree ==="
+                        find "$TI_BASE" -type f 2>/dev/null | head -100 || true
+                      fi
+
+                      echo ""
+                      echo "=== Unified CG size ==="
+                      UFOUND=0
+                      find "$TI_BASE" -type f -name 'unified-cg-*.ndjson' 2>/dev/null > /tmp/unified-cg-files.txt || true
+                      while IFS= read -r f; do
+                        [ -z "$f" ] && continue
+                        UFOUND=1
+                        SIZE=$(wc -c < "$f" | tr -d ' ')
+                        LINES=$(wc -l < "$f" | tr -d ' ')
+                        echo "  path:  $f"
+                        echo "  size:  $SIZE bytes"
+                        echo "  lines: $LINES"
+                      done < /tmp/unified-cg-files.txt
+                      if [ "$UFOUND" -eq 0 ]; then
+                        echo "  (no unified-cg-*.ndjson found)"
+                      fi
+
+                      exit "$TEST_EXIT"
+          buildIntelligence:
+            enabled: false
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: MarkAsFailure
+        variables:
+          - name: DOTNET_SYSTEM_GLOBALIZATION_INVARIANT
+            type: String
+            required: false
+            value: "1"
+  identifier: integration_tests_simple
+  name: integration tests simple
