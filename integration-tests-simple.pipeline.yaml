@@ -310,16 +310,18 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      echo "=== Runner native-agent.log (FULL) ==="
-                      cat "$TI_BASE/runner/native-agent.log" 2>/dev/null || echo "(missing)"
+                      LOG="$TI_BASE/runner/native-agent.log"
+                      echo "=== Runner native-agent.log (size: $(wc -c < "$LOG" 2>/dev/null || echo 0)) ==="
+                      echo "--- Classified / Registering / Stats / RECORD / Collector / X-TI ---"
+                      grep -nE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Collector|Opened call-graph|Enqueue:|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo' "$LOG" 2>/dev/null | head -120
                       echo ""
-                      echo "=== Runner debug.log (FULL) ==="
-                      cat "$TI_BASE/runner/debug.log" 2>/dev/null || echo "(missing)"
+                      echo "--- Ignored/Instrumenting com.harness (callgraph decisions) ---"
+                      grep -nE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$LOG" 2>/dev/null | head -30
                       echo ""
-                      echo "=== Surefire dumpstream (forked JVM diverted output) ==="
+                      echo "=== Surefire dumpstream ==="
                       find /harness/target/surefire-reports -name "*.dumpstream" -type f 2>/dev/null | while IFS= read -r f; do
                         echo "----- $f -----"
-                        cat "$f"
+                        head -50 "$f"
                       done || echo "(none)"
               - step:
                   type: Run
@@ -332,11 +334,13 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      echo "=== Order native-agent.log (FULL) ==="
-                      cat "$TI_BASE/order/native-agent.log" 2>/dev/null || echo "(missing)"
+                      LOG="$TI_BASE/order/native-agent.log"
+                      echo "=== Order native-agent.log (size: $(wc -c < "$LOG" 2>/dev/null || echo 0)) ==="
+                      echo "--- Classified / Registering / Stats / RECORD / Collector / X-TI ---"
+                      grep -nE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Collector|Opened call-graph|Enqueue:|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo' "$LOG" 2>/dev/null | head -120
                       echo ""
-                      echo "=== Order debug.log (FULL) ==="
-                      cat "$TI_BASE/order/debug.log" 2>/dev/null || echo "(missing)"
+                      echo "--- Ignored/Instrumenting com.harness (callgraph decisions) ---"
+                      grep -nE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$LOG" 2>/dev/null | head -30
               - step:
                   type: Run
                   name: Print inventory logs
@@ -348,11 +352,13 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      echo "=== Inventory native-agent.log (FULL) ==="
-                      cat "$TI_BASE/inventory/native-agent.log" 2>/dev/null || echo "(missing)"
+                      LOG="$TI_BASE/inventory/native-agent.log"
+                      echo "=== Inventory native-agent.log (size: $(wc -c < "$LOG" 2>/dev/null || echo 0)) ==="
+                      echo "--- Classified / Registering / Stats / RECORD / Collector / X-TI ---"
+                      grep -nE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Collector|Opened call-graph|Enqueue:|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo' "$LOG" 2>/dev/null | head -120
                       echo ""
-                      echo "=== Inventory debug.log (FULL) ==="
-                      cat "$TI_BASE/inventory/debug.log" 2>/dev/null || echo "(missing)"
+                      echo "--- Ignored/Instrumenting com.harness (callgraph decisions) ---"
+                      grep -nE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$LOG" 2>/dev/null | head -30
               - step:
                   type: Run
                   name: Print shipping logs
@@ -364,11 +370,13 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      echo "=== Shipping native-agent.log (FULL) ==="
-                      cat "$TI_BASE/shipping/native-agent.log" 2>/dev/null || echo "(missing)"
+                      LOG="$TI_BASE/shipping/native-agent.log"
+                      echo "=== Shipping native-agent.log (size: $(wc -c < "$LOG" 2>/dev/null || echo 0)) ==="
+                      echo "--- Classified / Registering / Stats / RECORD / Collector / X-TI ---"
+                      grep -nE 'Classified com\.harness|Registering method: com\.harness|Registering entry point: com\.harness|Stats:|RECORD|Collector|Opened call-graph|Enqueue:|X-TI-Execution|Wrote unified|Attaching Harness TI|Process Id|Sending.*class prefix|Sending.*jar repo' "$LOG" 2>/dev/null | head -120
                       echo ""
-                      echo "=== Shipping debug.log (FULL) ==="
-                      cat "$TI_BASE/shipping/debug.log" 2>/dev/null || echo "(missing)"
+                      echo "--- Ignored/Instrumenting com.harness (callgraph decisions) ---"
+                      grep -nE 'Ignored type: com\.harness|Instrumenting class: com\.harness' "$LOG" 2>/dev/null | head -30
               - step:
                   type: Run
                   name: Print CG file contents
