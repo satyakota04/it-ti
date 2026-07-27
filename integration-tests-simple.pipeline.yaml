@@ -90,14 +90,15 @@ pipeline:
 
                       TI_BASE=/harness/ti-it
 
-                      # Per-service + runner configs — mirrors run-order/inventory/shipping.sh + run-it-ti.sh
-                      # (logLevel 5, logConsole false, native Information, packageInference false)
+                      # Per-service + runner configs (debug mode: Java logLevel 6 + logConsole true,
+                      # native Debug + console true). Revert to logLevel 5 / logConsole false / Information
+                      # once CG instrumentation is confirmed working.
                       for svc in order inventory shipping runner; do
                         mkdir -p "$TI_BASE/$svc/native"
                         cat > "$TI_BASE/$svc/config.ini" <<EOF
                       outDir: $TI_BASE/$svc
-                      logLevel: 5
-                      logConsole: false
+                      logLevel: 6
+                      logConsole: true
                       packageInference: false
                       EOF
                         cat > "$TI_BASE/$svc/native-config.json" <<EOF
@@ -105,8 +106,8 @@ pipeline:
                         "outdir": "$TI_BASE/$svc/native",
                         "connectorPath": "$AGENT_JAR",
                         "logging": {
-                          "level": "Information",
-                          "console": "false",
+                          "level": "Debug",
+                          "console": "true",
                           "file": "true",
                           "filePath": "$TI_BASE/$svc/native-agent.log"
                         }

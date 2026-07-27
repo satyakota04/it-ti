@@ -14,6 +14,14 @@
 # callgraph-boot.jar + callgraph-agent.jar as resources) but is built in the
 # same container for a single self-contained run.
 #
+# Branch: builds from fix/instrument-java-with-source-files (merged with main).
+#   - main has #46 "Drop the need for libicu on Linux" (InvariantGlobalization)
+#   - the branch adds hasExactPackageSource() to CallgraphIgnoreMatcher, which
+#     instruments classes whose .java source is found under the .git workspace
+#     even when classifyClass says DEPENDENCY (e.g. Maven target/test-classes).
+#     Without this, test classes loaded from directories with no Harness
+#     manifest (class.prefixes) are ignored → 0-byte call graphs.
+#
 # Usage:
 #   ./build-linux-agents.sh                # uses default sibling repo paths
 #   TI_AGENTS_DIR=/path/to/ti-agents ./build-linux-agents.sh
@@ -24,6 +32,7 @@ IT_TI_DIR="${IT_TI_DIR:-$SCRIPT_DIR}"
 TI_AGENTS_DIR="${TI_AGENTS_DIR:-$IT_TI_DIR/../ti-agents}"
 IMAGE_TAG="${IMAGE_TAG:-ti-agent-linux-builder:local}"
 OUT_DIR="$IT_TI_DIR/ti-agent-artifacts"
+BRANCH="${BRANCH:-fix/instrument-java-with-source-files}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 
@@ -33,6 +42,18 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 echo "==> ti-agents repo: $TI_AGENTS_DIR"
 echo "==> output dir:     $OUT_DIR"
+echo "==> image:          $IMAGE_TAG (linux/amd64)"
+echo "==> branch:         $BRANCH"
+echo ""
+
+# 0. Ensure the ti-agents repo is on the correct branch (merged with main for
+#    both the libicu fix #46 and the source-on-disk instrumentation fix).
+echo "==> Checking out $BRANCH and merging main..."
+(
+  cd "$TI_AGENTS_DIR"
+  git checkout "$BRANCH" 2>/dev/null || die "branch $BRANCH not found in $TI_AGENTS_DIR"
+  git merge main --no-edit 2>/dev/null || echo "(main already merged or no changes)"
+)
 echo "==> image:          $IMAGE_TAG (linux/amd64)"
 echo ""
 
