@@ -90,9 +90,11 @@ pipeline:
 
                       TI_BASE=/harness/ti-it
 
-                      # Per-service + runner configs (debug mode: Java logLevel 6 + logConsole true,
-                      # native Debug + console true). Revert to logLevel 5 / logConsole false / Information
-                      # once CG instrumentation is confirmed working.
+                      # Per-service + runner configs. Keep logConsole:false / native console:false
+                      # because logConsole:true writes to stdout which corrupts the forked surefire
+                      # JVM channel ("Corrupted channel by directly writing to native stream"). Debug
+                      # detail is still captured via logLevel:6 / native Debug + file logging; the
+                      # print_agent_logs step below dumps those files after the run.
                       # Services: rely on class.prefixes from their jar manifests (META-INF/harness-manifest.properties).
                       # Runner: test classes load from target/test-classes/ (directory, no manifest) -> classified
                       # DEPENDENCY and ignored; instrPackages forces instrumentation of com.harness.sample.it.*
@@ -102,7 +104,7 @@ pipeline:
                         cat > "$TI_BASE/$svc/config.ini" <<EOF
                       outDir: $TI_BASE/$svc
                       logLevel: 6
-                      logConsole: true
+                      logConsole: false
                       packageInference: false
                       EOF
                         cat > "$TI_BASE/$svc/native-config.json" <<EOF
@@ -111,7 +113,7 @@ pipeline:
                         "connectorPath": "$AGENT_JAR",
                         "logging": {
                           "level": "Debug",
-                          "console": "true",
+                          "console": "false",
                           "file": "true",
                           "filePath": "$TI_BASE/$svc/native-agent.log"
                         }
@@ -297,6 +299,67 @@ pipeline:
                       fi
 
                       exit "$TEST_EXIT"
+              - step:
+                  type: Run
+                  name: Print agent logs
+                  identifier: print_agent_logs
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      TI_BASE=/harness/ti-it
+
+                      echo "=== Agent log files (sizes) ==="
+                      find "$TI_BASE" -name "*.log" -type f 2>/dev/null | while IFS= read -r f; do
+                        SIZE=$(wc -c < "$f" | tr -d ' ')
+                        LINES=$(wc -l < "$f" | tr -d ' ')
+                        echo "  $f"
+                        echo "    size: $SIZE bytes, lines: $LINES"
+                      done
+
+                      echo ""
+                      echo "=== Runner native-agent.log (Java agent debug: Instrumenting/Ignored/Roots) ==="
+                      if [ -f "$TI_BASE/runner/native-agent.log" ]; then
+                        echo "----- first 200 lines -----"
+                        head -200 "$TI_BASE/runner/native-agent.log"
+                        echo "----- grep: com.harness.sample.it / Instrumenting / Ignored / Roots / Sending class prefix -----"
+                        grep -nE 'com\.harness\.sample\.it|Instrumenting class|Ignored type|Roots:|Sending.*class prefix|Sending.*jar repo|hasExactPackageSource|classifyClass' "$TI_BASE/runner/native-agent.log" | head -80
+                      else
+                        echo "  (no runner native-agent.log found)"
+                      fi
+
+                      echo ""
+                      echo "=== Service native-agent.log: classifyClass / class.prefixes / Instrumenting ==="
+                      for svc in order inventory shipping; do
+                        LOG="$TI_BASE/$svc/native-agent.log"
+                        echo "----- $svc -----"
+                        if [ -f "$LOG" ]; then
+                          grep -nE 'com\.harness\.sample|Instrumenting class|Sending.*class prefix|Sending.*jar repo|classifyClass|Roots:' "$LOG" | head -30 || echo "  (no matching lines)"
+                        else
+                          echo "  (no log)"
+                        fi
+                      done
+
+                      echo ""
+                      echo "=== Surefire dumpstream (forked JVM diverted output) ==="
+                      find /harness/target/surefire-reports -name "*.dumpstream" -type f 2>/dev/null | while IFS= read -r f; do
+                        echo "----- $f -----"
+                        head -100 "$f"
+                      done || echo "  (no dumpstream files)"
+
+                      echo ""
+                      echo "=== Final CG file sizes ==="
+                      find "$TI_BASE" -type f \( \
+                          -name 'unified-cg-*.ndjson' \
+                          -o -name 'cg_*.json' \
+                          -o -name 'cg_*.csv' \
+                          -o -name 'cg_*.ndjson' \
+                        \) 2>/dev/null | while IFS= read -r f; do
+                        SIZE=$(wc -c < "$f" | tr -d ' ')
+                        echo "  $f  ($SIZE bytes)"
+                      done
           buildIntelligence:
             enabled: false
         failureStrategies:
