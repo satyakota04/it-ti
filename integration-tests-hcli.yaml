@@ -62,6 +62,48 @@ pipeline:
                     archiveFormat: Tar
               - step:
                   type: Run
+                  name: Isolate service JARs
+                  identifier: isolate_service_jars
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      # TI agent scanNeighboringJars lists every *.jar in the parent directory of
+                      # the first seen service JAR. Keep one JAR per directory so shipping does not
+                      # discover order/inventory manifests from a shared /harness/target/ folder.
+                      SERVICES_ROOT=/harness/services
+                      TARGET=/harness/target
+
+                      ORDER_SRC="$TARGET/order-service-1.0-SNAPSHOT.jar"
+                      INVENTORY_SRC="$TARGET/inventory-service-1.0-SNAPSHOT.jar"
+                      SHIPPING_SRC="$TARGET/shipping-service-1.0-SNAPSHOT.jar"
+
+                      for src in "$ORDER_SRC" "$INVENTORY_SRC" "$SHIPPING_SRC"; do
+                        if [ ! -f "$src" ]; then
+                          echo "Missing service JAR: $src" >&2
+                          ls -la "$TARGET" >&2 || true
+                          exit 1
+                        fi
+                      done
+
+                      mkdir -p "$SERVICES_ROOT"/order "$SERVICES_ROOT"/inventory "$SERVICES_ROOT"/shipping
+                      cp "$ORDER_SRC" "$SERVICES_ROOT/order/"
+                      cp "$INVENTORY_SRC" "$SERVICES_ROOT/inventory/"
+                      cp "$SHIPPING_SRC" "$SERVICES_ROOT/shipping/"
+
+                      mkdir -p /harness/ti-agents
+                      cat > /harness/ti-agents/service-jars.env <<EOF
+                      ORDER_JAR=$SERVICES_ROOT/order/order-service-1.0-SNAPSHOT.jar
+                      INVENTORY_JAR=$SERVICES_ROOT/inventory/inventory-service-1.0-SNAPSHOT.jar
+                      SHIPPING_JAR=$SERVICES_ROOT/shipping/shipping-service-1.0-SNAPSHOT.jar
+                      EOF
+
+                      echo "=== Isolated service JARs ==="
+                      ls -la "$SERVICES_ROOT"/*/
+              - step:
+                  type: Run
                   name: Verify TI agents
                   identifier: download_ti_agents
                   spec:
@@ -135,10 +177,11 @@ pipeline:
                     command: |-
                       set -eu
                       . /harness/ti-agents/paths.env
+                      . /harness/ti-agents/service-jars.env
                       export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
                       export TI_AGENT_CONFIG=/harness/ti-it/shipping/native-config.json
                       java "-javaagent:${AGENT_JAR}=/harness/ti-it/shipping/config.ini" \
-                        -jar /harness/target/shipping-service-1.0-SNAPSHOT.jar
+                        -jar "$SHIPPING_JAR"
               - step:
                   type: Background
                   name: inventory-service
@@ -150,10 +193,11 @@ pipeline:
                     command: |-
                       set -eu
                       . /harness/ti-agents/paths.env
+                      . /harness/ti-agents/service-jars.env
                       export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
                       export TI_AGENT_CONFIG=/harness/ti-it/inventory/native-config.json
                       java "-javaagent:${AGENT_JAR}=/harness/ti-it/inventory/config.ini" \
-                        -jar /harness/target/inventory-service-1.0-SNAPSHOT.jar
+                        -jar "$INVENTORY_JAR"
               - step:
                   type: Background
                   name: order-service
@@ -165,10 +209,11 @@ pipeline:
                     command: |-
                       set -eu
                       . /harness/ti-agents/paths.env
+                      . /harness/ti-agents/service-jars.env
                       export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
                       export TI_AGENT_CONFIG=/harness/ti-it/order/native-config.json
                       java "-javaagent:${AGENT_JAR}=/harness/ti-it/order/config.ini" \
-                        -jar /harness/target/order-service-1.0-SNAPSHOT.jar
+                        -jar "$ORDER_JAR"
               - step:
                   type: Run
                   name: Wait and run ITs
@@ -228,6 +273,7 @@ pipeline:
 
                       HCLI_BIN=/harness/bin/hcli-linux
                       chmod +x "$HCLI_BIN"
+                      # Rebuild from HCli (CG dedup + stitched debug write) and copy here before running.
 
                       ORDER_SERVICE_URL=http://localhost:8081
                       INVENTORY_SERVICE_URL=http://localhost:8082
@@ -237,6 +283,7 @@ pipeline:
                       SHIPPING_SERVICE_HOST=$(printf '%s' "$SHIPPING_SERVICE_URL" | sed -E 's|^https?://||; s|/.*||')
 
                       TI_DATA_DIR=/harness/hcli-ti
+                      export HARNESS_TI_DATA_DIR="$TI_DATA_DIR"
                       mkdir -p "$TI_DATA_DIR"
                       HARNESS_TI_SERVICES_FILE="$TI_DATA_DIR/services.yaml"
                       printf 'services:\n  - %s\n  - %s\n  - %s\n' \
@@ -245,36 +292,83 @@ pipeline:
 
                       export CI_ENABLE_HCLI_FOR_INTEGRATION_TESTS=true
                       export CI_ENABLE_RUNTESTV2_JAVA_V2_FF=true
-                      export HARNESS_TI_QA_ENV=QA_ENV_ENABLED
                       export HARNESS_TI_SERVICES_FILE
 
-                      TRAMPOLINE_OVERRIDE_PATH=/harness/ti-agent-artifacts/java-agent-trampoline.jar
-                      NATIVE_AGENT_OVERRIDE_PATH=/harness/ti-agent-artifacts/ti-agent.so
+                      ARTIFACT_DIR=/harness/ti-agent-artifacts
+                      AGENT_JAR="$ARTIFACT_DIR/java-agent-trampoline.jar"
+                      NATIVE_SO="$ARTIFACT_DIR/ti-agent.so"
 
                       cd /harness
 
-                      "$HCLI_BIN" agents download --ti-data-dir "$TI_DATA_DIR" 2>/dev/null || true
-                      "$HCLI_BIN" agents setup --ti-data-dir "$TI_DATA_DIR" 2>/dev/null || true
+                      # hcli defaults to ~/.hcli/ti-agents unless --ti-data-dir is set.
+                      HARNESS_NODE_INDEX="${HARNESS_NODE_INDEX:-0}"
+                      HCLI_AGENT_DIR="$TI_DATA_DIR"
+                      if [ -n "${HARNESS_STEP_ID:-}" ] && [ -n "${HARNESS_PIPELINE_ID:-}" ] \
+                        && [ -n "${HARNESS_BUILD_ID:-}" ] && [ -n "${HARNESS_STAGE_ID:-}" ]; then
+                        HCLI_AGENT_DIR="$TI_DATA_DIR/s${HARNESS_BUILD_ID}_${HARNESS_STAGE_ID}_${HARNESS_PIPELINE_ID}_${HARNESS_STEP_ID}_${HARNESS_NODE_INDEX}"
+                      fi
 
-                      find "$TI_DATA_DIR" -type f -name 'java-agent-trampoline.jar' 2>/dev/null | while IFS= read -r f; do
-                        cp "$TRAMPOLINE_OVERRIDE_PATH" "$f"
-                      done
+                      AGENT_LINUX_DIR="$HCLI_AGENT_DIR/dotnet/v2/linux"
+                      RUNNER_DIR="$HCLI_AGENT_DIR/runner"
+                      mkdir -p "$AGENT_LINUX_DIR" "$RUNNER_DIR/native"
+                      cp "$AGENT_JAR" "$AGENT_LINUX_DIR/java-agent-trampoline.jar"
+                      cp "$NATIVE_SO" "$AGENT_LINUX_DIR/ti-agent.so"
 
-                      find "$TI_DATA_DIR" -type f -name 'ti-agent.so' 2>/dev/null | while IFS= read -r f; do
-                        cp "$NATIVE_AGENT_OVERRIDE_PATH" "$f"
-                      done
+                      # Test JVM config (surefire argLine). instrPackages required for test classes.
+                      printf 'outDir: %s\nlogLevel: 6\nlogConsole: false\npackageInference: false\ninstrPackages: com.harness.sample.it.\n' \
+                        "$RUNNER_DIR" > "$RUNNER_DIR/config.ini"
+                      printf '{\n  "outdir": "%s/native",\n  "connectorPath": "%s/java-agent-trampoline.jar",\n  "logging": {\n    "level": "Debug",\n    "console": "false",\n    "file": "true",\n    "filePath": "%s/native-agent.log"\n  }\n}\n' \
+                        "$RUNNER_DIR" "$AGENT_LINUX_DIR" "$RUNNER_DIR" > "$RUNNER_DIR/native-config.json"
 
-                      # Test classes load from target/test-classes (no jar manifest) -> need instrPackages.
-                      find "$TI_DATA_DIR" -type f -name 'config.ini' 2>/dev/null | while IFS= read -r f; do
-                        if ! grep -q '^instrPackages:' "$f"; then
-                          printf '\ninstrPackages: com.harness.sample.it.\n' >> "$f"
-                        fi
-                      done
+                      export HARNESS_TI_AGENT_PATH="$AGENT_LINUX_DIR/ti-agent.so"
+                      export TI_AGENT_CONFIG="$RUNNER_DIR/native-config.json"
 
-                      "$HCLI_BIN" htx --setup-agents=false --stdout --services-file "$HARNESS_TI_SERVICES_FILE" -- mvn -f pom.xml test \
+                      "$HCLI_BIN" htx \
+                        --ti-data-dir "$TI_DATA_DIR" \
+                        --setup-agents=false \
+                        --stdout \
+                        --services-file "$HARNESS_TI_SERVICES_FILE" \
+                        -- mvn -f pom.xml test \
+                        -DargLine="-javaagent:${AGENT_LINUX_DIR}/java-agent-trampoline.jar=${RUNNER_DIR}/config.ini" \
                         -Dorder.service.url="$ORDER_SERVICE_URL" \
                         -Dinventory.service.url="$INVENTORY_SERVICE_URL" \
                         -Dshipping.service.url="$SHIPPING_SERVICE_URL"
+
+                      echo ""
+                      echo "=== Raw unified CG (agent output) ==="
+                      RAW_CG_FOUND=0
+                      while IFS= read -r f; do
+                        [ -z "$f" ] && continue
+                        RAW_CG_FOUND=1
+                        echo "  path: $f"
+                        if command -v python3 >/dev/null 2>&1; then
+                          while IFS= read -r line; do
+                            [ -z "$line" ] && continue
+                            printf '%s' "$line" | python3 -m json.tool
+                            echo ""
+                          done < "$f"
+                        else
+                          cat "$f"
+                          echo ""
+                        fi
+                      done < <(find "$TI_DATA_DIR" -type f -name 'unified-cg-*.ndjson' 2>/dev/null | sort)
+                      if [ "$RAW_CG_FOUND" -eq 0 ]; then
+                        echo "  (no unified-cg-*.ndjson under $TI_DATA_DIR)"
+                      fi
+
+                      echo ""
+                      echo "=== Processed IT call graph (stitched + deduped, upload payload) ==="
+                      STITCHED_FOUND=0
+                      while IFS= read -r f; do
+                        [ -z "$f" ] && continue
+                        STITCHED_FOUND=1
+                        echo "  path: $f"
+                        cat "$f"
+                        echo ""
+                      done < <(find "$TI_DATA_DIR" -type f -name 'unified-cg-*.ndjson.stitched.json' 2>/dev/null | sort)
+                      if [ "$STITCHED_FOUND" -eq 0 ]; then
+                        echo "  (no .stitched.json — rebuild bin/hcli-linux from HCli)"
+                      fi
               - step:
                   type: Run
                   name: Print runner logs
@@ -286,14 +380,10 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      HCLI_CG_DIR="${HARNESS_TI_DATA_DIR:-/root/.hcli/ti-agents}"
                       HCLI_TI_DIR=/harness/hcli-ti
+                      HCLI_CG_DIR="${HARNESS_TI_DATA_DIR:-/root/.hcli/ti-agents}"
                       for DIR in "$TI_BASE/runner" "$HCLI_TI_DIR" "$HCLI_CG_DIR"; do
-                        [ -d "$DIR" ] || continue
-                        echo "=== Runner log files ($DIR) ==="
-                        ls -la "$DIR"/*.log 2>/dev/null || true
-                        for f in "$DIR"/*.log; do
-                          [ -f "$f" ] || continue
+                        find "$DIR" -type f -name '*.log' 2>/dev/null | while IFS= read -r f; do
                           echo ""
                           echo "========== $f =========="
                           cat "$f"
@@ -305,6 +395,9 @@ pipeline:
                         echo "--- $f ---"
                         cat "$f"
                       done || echo "(none)"
+                  when:
+                    stageStatus: All
+                    condition: "false"
               - step:
                   type: Run
                   name: Print order logs
@@ -325,6 +418,9 @@ pipeline:
                         echo "========== $f =========="
                         cat "$f"
                       done
+                  when:
+                    stageStatus: All
+                    condition: "false"
               - step:
                   type: Run
                   name: Print inventory logs
@@ -345,6 +441,9 @@ pipeline:
                         echo "========== $f =========="
                         cat "$f"
                       done
+                  when:
+                    stageStatus: All
+                    condition: "false"
               - step:
                   type: Run
                   name: Print shipping logs
@@ -365,9 +464,12 @@ pipeline:
                         echo "========== $f =========="
                         cat "$f"
                       done
+                  when:
+                    stageStatus: All
+                    condition: "false"
               - step:
                   type: Run
-                  name: Print unified CG
+                  name: Print call graphs
                   identifier: print_cg_contents
                   spec:
                     connectorRef: testingggg
@@ -376,11 +478,74 @@ pipeline:
                     command: |-
                       set -eu
                       TI_BASE=/harness/ti-it
-                      HCLI_CG_DIR="${HARNESS_TI_DATA_DIR:-/root/.hcli/ti-agents}"
                       HCLI_TI_DIR=/harness/hcli-ti
-                      find "$TI_BASE" "$HCLI_TI_DIR" "$HCLI_CG_DIR" -type f -name 'unified-cg-*.ndjson' 2>/dev/null | sort | while IFS= read -r f; do
-                        python3 -m json.tool "$f"
-                      done
+
+                      echo "=== Call-graph files (sizes) ==="
+                      FOUND=0
+                      find "$TI_BASE" "$HCLI_TI_DIR" -type f \( \
+                          -name 'unified-cg-*.ndjson' \
+                          -o -name 'cg_*.json' \
+                          -o -name 'cg_*.csv' \
+                          -o -name 'cg_*.ndjson' \
+                        \) 2>/dev/null | sort > /tmp/cg-files.txt || true
+                      while IFS= read -r f; do
+                        [ -z "$f" ] && continue
+                        FOUND=1
+                        SIZE=$(wc -c < "$f" | tr -d ' ')
+                        echo "  $f"
+                        echo "    size: $SIZE bytes"
+                      done < /tmp/cg-files.txt
+                      if [ "$FOUND" -eq 0 ]; then
+                        echo "  (none found under $TI_BASE or $HCLI_TI_DIR)"
+                        echo "=== Agent output tree ==="
+                        find "$TI_BASE" "$HCLI_TI_DIR" -type f 2>/dev/null | head -100 || true
+                      fi
+
+                      echo ""
+                      echo "=== Unified CG ==="
+                      UFOUND=0
+                      find "$TI_BASE" "$HCLI_TI_DIR" -type f -name 'unified-cg-*.ndjson' 2>/dev/null | sort > /tmp/unified-cg-files.txt || true
+                      while IFS= read -r f; do
+                        [ -z "$f" ] && continue
+                        UFOUND=1
+                        SIZE=$(wc -c < "$f" | tr -d ' ')
+                        LINES=$(wc -l < "$f" | tr -d ' ')
+                        echo "  path:  $f"
+                        echo "  size:  $SIZE bytes"
+                        echo "  lines: $LINES"
+                        echo ""
+                        echo "  --- contents ---"
+                        while IFS= read -r line; do
+                          [ -z "$line" ] && continue
+                          printf '%s' "$line" | python3 -m json.tool
+                          echo ""
+                        done < "$f"
+                      done < /tmp/unified-cg-files.txt
+                      if [ "$UFOUND" -eq 0 ]; then
+                        echo "  (no unified-cg-*.ndjson found)"
+                      fi
+
+                      echo ""
+                      echo "=== Processed IT call graph (stitched + deduped) ==="
+                      SFOUND=0
+                      find "$TI_BASE" "$HCLI_TI_DIR" -type f -name 'unified-cg-*.ndjson.stitched.json' 2>/dev/null | sort > /tmp/stitched-cg-files.txt || true
+                      while IFS= read -r f; do
+                        [ -z "$f" ] && continue
+                        SFOUND=1
+                        SIZE=$(wc -c < "$f" | tr -d ' ')
+                        echo "  path:  $f"
+                        echo "  size:  $SIZE bytes"
+                        echo ""
+                        echo "  --- contents ---"
+                        cat "$f"
+                        echo ""
+                      done < /tmp/stitched-cg-files.txt
+                      if [ "$SFOUND" -eq 0 ]; then
+                        echo "  (no unified-cg-*.ndjson.stitched.json found)"
+                      fi
+                  when:
+                    stageStatus: All
+                    condition: "false"
           buildIntelligence:
             enabled: false
         failureStrategies:
