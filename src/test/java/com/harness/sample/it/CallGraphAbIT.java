@@ -7,7 +7,7 @@ import org.testng.annotations.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** A↔B: inventory stock-order → order (getEta). */
+/** A↔B: inventory stock-order → order (getEta). fja */
 public class CallGraphAbIT extends ItSupport {
 
     @Test(description = "A↔B: inventory stock-order → order (getEta)")
