@@ -10,7 +10,7 @@ import org.testng.annotations.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** A→B→C: order → inventory → shipping. */
-public class CallGraphAbcIT extends ItSupport {
+public class SelectAbcIT extends ItSupport {
 
     @Test(description = "A→B→C: order → inventory → shipping")
     public void combination_ABC_orderViaInventoryAndShipping() throws Exception {

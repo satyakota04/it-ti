@@ -14,7 +14,7 @@ cd /Users/satya/Git/it-ti
 ./run-inventory.sh
 ./run-order.sh
 
-# Terminal 4: run the slim CallGraph*IT suite (agent on test JVM)
+# Terminal 4: run the slim Select*IT suite (agent on test JVM)
 ./run-it-ti.sh
 
 # Terminal 5: check classification
@@ -57,12 +57,15 @@ Tests and runner scripts read URLs from this file (system properties / env still
 ### Check Scripts
 - **`check-all-classification.sh`** - Check all three services
 
-## Slim test suite (one IT per file)
+## Slim test suite (one IT per file, disjoint file ownership)
 
 A = order, B = inventory, C = shipping. Shared helpers in `ItSupport`.
 
-1. **`CallGraphAbcIT`** — A→B→C: `POST /orders` + `GET /orders/{id}`
-2. **`CallGraphAbIT`** — A↔B: `GET /stock-order/{sku}` (inventory → order)
+1. **`SelectAbcIT`** — A→B→C: `POST /orders` + `GET /orders/{id}`
+2. **`SelectBacIT`** — B→A→C: `GET /stock-order/{sku}`
+3. **`SelectCabIT`** — C→A→B: `GET /ship-order/{sku}`
+
+See [`TEST-CLASS-COVERAGE.md`](TEST-CLASS-COVERAGE.md) for the disjoint file matrix.
 
 ## Ports / URLs
 

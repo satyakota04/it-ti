@@ -24,6 +24,10 @@ abstract class ItSupport {
         return serviceUrl("inventory.service.url");
     }
 
+    protected static String shippingServiceUrl() {
+        return serviceUrl("shipping.service.url");
+    }
+
     private static Properties loadServices() {
         Properties props = new Properties();
         Path file = Path.of("services.properties");
