@@ -7,7 +7,7 @@ import org.testng.annotations.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/** B→A→C: inventory stock-order → order eta → shipping priority-eta. */
+/** B→A→C: inventory stock-order → order eta → shipping priority-eta.. */
 public class SelectBacIT extends ItSupport {
 
     @Test(description = "B→A→C: inventory stock-order → order eta → shipping priority-eta")
