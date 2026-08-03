@@ -9,7 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
 
-/** Shared HTTP client and service URL loading for IT classes. */
+/** Shared HTTP client and service URL loading for IT classeas. */
 abstract class ItSupport {
     private static final Properties SERVICES = loadServices();
 
