@@ -56,6 +56,18 @@
                     <includes>
                         <include>**/*IT.java</include>
                     </includes>
+                    <!-- Harness CI globs **/*.xml; TestNG's default JUnitReportReporter also
+                         writes junitreports/TEST-*.xml for the same tests as testng-results.xml. -->
+                    <properties>
+                        <property>
+                            <name>usedefaultlisteners</name>
+                            <value>false</value>
+                        </property>
+                        <property>
+                            <name>listener</name>
+                            <value>org.testng.reporters.XMLReporter</value>
+                        </property>
+                    </properties>
                 </configuration>
             </plugin>
         </plugins>

@@ -1,0 +1,545 @@
+pipeline:
+  tags: {}
+  projectIdentifier: qajt
+  orgIdentifier: default
+  properties:
+    ci:
+      codebase:
+        connectorRef: itcheck
+        repoName: it-ti
+        build: <+input>
+  stages:
+    - stage:
+        name: CI
+        identifier: CI
+        description: Restore jars, run services with agents, run ITs via hcli htx (hcli-managed test agents + IT select)
+        type: CI
+        spec:
+          cloneCodebase: true
+          caching:
+            enabled: true
+            override: true
+            paths: []
+          infrastructure:
+            type: KubernetesDirect
+            spec:
+              connectorRef: deleciplay
+              namespace: harness-delegate-ng
+              automountServiceAccountToken: true
+              nodeSelector: {}
+              os: Linux
+          execution:
+            steps:
+              - step:
+                  type: RestoreCacheS3
+                  name: inventory-service-maven-jar-download
+                  identifier: inventory_service_jar_restore
+                  spec:
+                    connectorRef: awsinteljt
+                    region: us-east-1
+                    bucket: satyakota-test
+                    key: inventory-service-maven
+                    archiveFormat: Tar
+              - step:
+                  type: RestoreCacheS3
+                  name: shipping-service-maven-jar-download
+                  identifier: shipping_service_jar_restore
+                  spec:
+                    connectorRef: awsinteljt
+                    region: us-east-1
+                    bucket: satyakota-test
+                    key: shipping-service-maven
+                    archiveFormat: Tar
+              - step:
+                  type: RestoreCacheS3
+                  name: order-service-jar-download
+                  identifier: order_service_jar_restore
+                  spec:
+                    connectorRef: awsinteljt
+                    region: us-east-1
+                    bucket: satyakota-test
+                    key: order-service
+                    archiveFormat: Tar
+              - step:
+                  type: Run
+                  name: Isolate service JARs
+                  identifier: isolate_service_jars
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      # TI agent scanNeighboringJars lists every *.jar in the parent directory of
+                      # the first seen service JAR. Keep one JAR per directory so shipping does not
+                      # discover order/inventory manifests from a shared /harness/target/ folder.
+                      SERVICES_ROOT=/harness/services
+                      TARGET=/harness/target
+
+                      ORDER_SRC="$TARGET/order-service-1.0-SNAPSHOT.jar"
+                      INVENTORY_SRC="$TARGET/inventory-service-1.0-SNAPSHOT.jar"
+                      SHIPPING_SRC="$TARGET/shipping-service-1.0-SNAPSHOT.jar"
+
+                      for src in "$ORDER_SRC" "$INVENTORY_SRC" "$SHIPPING_SRC"; do
+                        if [ ! -f "$src" ]; then
+                          echo "Missing service JAR: $src" >&2
+                          ls -la "$TARGET" >&2 || true
+                          exit 1
+                        fi
+                      done
+
+                      mkdir -p "$SERVICES_ROOT"/order "$SERVICES_ROOT"/inventory "$SERVICES_ROOT"/shipping
+                      cp "$ORDER_SRC" "$SERVICES_ROOT/order/"
+                      cp "$INVENTORY_SRC" "$SERVICES_ROOT/inventory/"
+                      cp "$SHIPPING_SRC" "$SERVICES_ROOT/shipping/"
+
+                      mkdir -p /harness/ti-agents
+                      cat > /harness/ti-agents/service-jars.env <<EOF
+                      ORDER_JAR=$SERVICES_ROOT/order/order-service-1.0-SNAPSHOT.jar
+                      INVENTORY_JAR=$SERVICES_ROOT/inventory/inventory-service-1.0-SNAPSHOT.jar
+                      SHIPPING_JAR=$SERVICES_ROOT/shipping/shipping-service-1.0-SNAPSHOT.jar
+                      EOF
+
+                      echo "=== Isolated service JARs ==="
+                      ls -la "$SERVICES_ROOT"/*/
+              - step:
+                  type: Run
+                  name: Verify TI agents
+                  identifier: download_ti_agents
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      # Agent artifacts are committed to this repo under ti-agent-artifacts/
+                      # (built via build-linux-agents.sh from the ti-agents source, linux/amd64).
+                      # cloneCodebase: true places them at /harness/ti-agent-artifacts/.
+                      ARTIFACT_DIR=/harness/ti-agent-artifacts
+                      AGENT_JAR="$ARTIFACT_DIR/java-agent-trampoline.jar"
+                      NATIVE_SO="$ARTIFACT_DIR/ti-agent.so"
+
+                      if [ ! -f "$AGENT_JAR" ] || [ ! -f "$NATIVE_SO" ]; then
+                        echo "Missing agent artifacts under $ARTIFACT_DIR" >&2
+                        ls -la "$ARTIFACT_DIR" >&2 || true
+                        exit 1
+                      fi
+
+                      # paths.env is consumed by the service + runner steps below.
+                      mkdir -p /harness/ti-agents
+                      echo "AGENT_JAR=$AGENT_JAR" | tee /harness/ti-agents/paths.env
+                      echo "NATIVE_SO=$NATIVE_SO"  | tee -a /harness/ti-agents/paths.env
+
+                      TI_BASE=/harness/ti-it
+
+                      # Per-service + runner configs. Keep logConsole:false / native console:false
+                      # because logConsole:true writes to stdout which corrupts the forked surefire
+                      # JVM channel ("Corrupted channel by directly writing to native stream"). Debug
+                      # detail is still captured via logLevel:6 / native Debug + file logging; the
+                      # print_agent_logs step below dumps those files after the run.
+                      # Services: rely on class.prefixes from their jar manifests (META-INF/harness-manifest.properties).
+                      # Runner: test classes load from target/test-classes/ (directory, no manifest) -> classified
+                      # DEPENDENCY and ignored; instrPackages forces instrumentation of com.harness.sample.it.*
+                      # via the matchesIncludes override in CallgraphIgnoreMatcher.
+                      for svc in order inventory shipping; do
+                        mkdir -p "$TI_BASE/$svc/native"
+                        cat > "$TI_BASE/$svc/config.ini" <<EOF
+                      outDir: $TI_BASE/$svc
+                      logLevel: 6
+                      logConsole: false
+                      packageInference: false
+                      EOF
+                        cat > "$TI_BASE/$svc/native-config.json" <<EOF
+                      {
+                        "outdir": "$TI_BASE/$svc/native",
+                        "connectorPath": "$AGENT_JAR",
+                        "logging": {
+                          "level": "Debug",
+                          "console": "false",
+                          "file": "true",
+                          "filePath": "$TI_BASE/$svc/native-agent.log"
+                        }
+                      }
+                      EOF
+                      done
+
+                      echo "=== Agent artifacts ==="
+                      ls -la "$AGENT_JAR" "$NATIVE_SO"
+                      ls -la "$TI_BASE"/*/config.ini
+              - step:
+                  type: Background
+                  name: shipping-service
+                  identifier: shipping
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      . /harness/ti-agents/paths.env
+                      . /harness/ti-agents/service-jars.env
+                      export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
+                      export TI_AGENT_CONFIG=/harness/ti-it/shipping/native-config.json
+                      java "-javaagent:${AGENT_JAR}=/harness/ti-it/shipping/config.ini" \
+                        -jar "$SHIPPING_JAR"
+              - step:
+                  type: Background
+                  name: inventory-service
+                  identifier: inventory
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      . /harness/ti-agents/paths.env
+                      . /harness/ti-agents/service-jars.env
+                      export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
+                      export TI_AGENT_CONFIG=/harness/ti-it/inventory/native-config.json
+                      java "-javaagent:${AGENT_JAR}=/harness/ti-it/inventory/config.ini" \
+                        -jar "$INVENTORY_JAR"
+              - step:
+                  type: Background
+                  name: order-service
+                  identifier: order
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      . /harness/ti-agents/paths.env
+                      . /harness/ti-agents/service-jars.env
+                      export HARNESS_TI_AGENT_PATH="$NATIVE_SO"
+                      export TI_AGENT_CONFIG=/harness/ti-it/order/native-config.json
+                      java "-javaagent:${AGENT_JAR}=/harness/ti-it/order/config.ini" \
+                        -jar "$ORDER_JAR"
+              - step:
+                  type: Run
+                  name: Wait and run ITs
+                  identifier: wait_and_run_its
+                  spec:
+                    connectorRef: testingggg
+                    image: maven:3.9-eclipse-temurin-17
+                    shell: Bash
+                    command: |-
+                      set -eu
+
+                      wait_for() {
+                        name="$1"
+                        url="$2"
+                        i=0
+                        while [ "$i" -lt 60 ]; do
+                          if curl -sf "$url" >/dev/null 2>&1; then
+                            echo "$name ready ($url)"
+                            return 0
+                          fi
+                          i=$((i + 1))
+                          sleep 2
+                        done
+                        echo "$name not ready: $url" >&2
+                        exit 1
+                      }
+
+                      wait_for shipping "http://localhost:8083/eta/TEST-SKU"
+                      wait_for inventory "http://localhost:8082/stock/TEST-SKU"
+
+                      i=0
+                      while [ "$i" -lt 60 ]; do
+                        if curl -sf -X POST "http://localhost:8081/orders" \
+                          -H "Content-Type: application/json" \
+                          -d '{"sku":"TEST","quantity":1}' >/dev/null 2>&1; then
+                          echo "order ready (http://localhost:8081)"
+                          break
+                        fi
+                        i=$((i + 1))
+                        sleep 2
+                      done
+                      if [ "$i" -ge 60 ]; then
+                        echo "order not ready" >&2
+                        exit 1
+                      fi
+
+                      if ! ldconfig -p 2>/dev/null | grep -q libicu; then
+                        if command -v apt-get >/dev/null 2>&1; then
+                          export DEBIAN_FRONTEND=noninteractive
+                          apt-get update -qq || true
+                          apt-get install -y libicu74 2>/dev/null \
+                            || apt-get install -y libicu72 2>/dev/null \
+                            || apt-get install -y libicu 2>/dev/null \
+                            || true
+                        fi
+                      fi
+
+                      HCLI_BIN=/harness/bin/hcli-linux
+                      chmod +x "$HCLI_BIN"
+                      # Rebuild from HCli (CG dedup + stitched debug write) and copy here before running.
+
+                      ORDER_SERVICE_URL=http://localhost:8081
+                      INVENTORY_SERVICE_URL=http://localhost:8082
+                      SHIPPING_SERVICE_URL=http://localhost:8083
+                      ORDER_SERVICE_HOST=$(printf '%s' "$ORDER_SERVICE_URL" | sed -E 's|^https?://||; s|/.*||')
+                      INVENTORY_SERVICE_HOST=$(printf '%s' "$INVENTORY_SERVICE_URL" | sed -E 's|^https?://||; s|/.*||')
+                      SHIPPING_SERVICE_HOST=$(printf '%s' "$SHIPPING_SERVICE_URL" | sed -E 's|^https?://||; s|/.*||')
+
+                      TI_DATA_DIR=/harness/hcli-ti
+                      export HARNESS_TI_DATA_DIR="$TI_DATA_DIR"
+                      mkdir -p "$TI_DATA_DIR" /harness/ti-agents
+                      echo "TI_DATA_DIR=$TI_DATA_DIR" > /harness/ti-agents/ti-data-dir.env
+                      HARNESS_TI_SERVICES_FILE="$TI_DATA_DIR/services.yaml"
+                      printf 'services:\n  - %s\n  - %s\n  - %s\n' \
+                        "$ORDER_SERVICE_HOST" "$INVENTORY_SERVICE_HOST" "$SHIPPING_SERVICE_HOST" \
+                        > "$HARNESS_TI_SERVICES_FILE"
+
+                      export CI_ENABLE_HCLI_FOR_INTEGRATION_TESTS=true
+                      export CI_ENABLE_RUNTESTV2_JAVA_V2_FF=true
+                      export HARNESS_TI_SERVICES_FILE
+
+                      ARTIFACT_DIR=/harness/ti-agent-artifacts
+                      AGENT_JAR="$ARTIFACT_DIR/java-agent-trampoline.jar"
+                      NATIVE_SO="$ARTIFACT_DIR/ti-agent.so"
+
+                      cd /harness
+
+                      # Unified agent path (dotnet/v2/linux): hcli sets JAVA_TOOL_OPTIONS to the trampoline
+                      # without a config path. We supply config.ini (no writeTo) via the pre-mvn hook below.
+                      export HARNESS_NODE_INDEX="${HARNESS_NODE_INDEX:-0}"
+                      HCLI_AGENT_DIR="$TI_DATA_DIR"
+                      if [ -n "${HARNESS_STEP_ID:-}" ] && [ -n "${HARNESS_PIPELINE_ID:-}" ] \
+                        && [ -n "${HARNESS_BUILD_ID:-}" ] && [ -n "${HARNESS_STAGE_ID:-}" ]; then
+                        HCLI_AGENT_DIR="$TI_DATA_DIR/s${HARNESS_BUILD_ID}_${HARNESS_STAGE_ID}_${HARNESS_PIPELINE_ID}_${HARNESS_STEP_ID}_${HARNESS_NODE_INDEX}"
+                      fi
+                      AGENT_LINUX_DIR="$HCLI_AGENT_DIR/dotnet/v2/linux"
+                      RUNNER_DIR="$HCLI_AGENT_DIR/runner"
+                      mkdir -p "$AGENT_LINUX_DIR" "$RUNNER_DIR/native"
+                      cp "$AGENT_JAR" "$AGENT_LINUX_DIR/java-agent-trampoline.jar"
+                      cp "$NATIVE_SO" "$AGENT_LINUX_DIR/ti-agent.so"
+
+                      # Test JVM config: no writeTo/sourceFilesNonNative (unsupported by ti-agent-artifacts).
+                      printf 'outDir: %s\nlogLevel: 6\nlogConsole: false\npackageInference: false\ninstrPackages: com.harness.sample.it.\n' \
+                        "$RUNNER_DIR" > "$RUNNER_DIR/config.ini"
+                      printf '{\n  "outdir": "%s/native",\n  "connectorPath": "%s/java-agent-trampoline.jar",\n  "logging": {\n    "level": "Debug",\n    "console": "false",\n    "file": "true",\n    "filePath": "%s/native-agent.log"\n  }\n}\n' \
+                        "$RUNNER_DIR" "$AGENT_LINUX_DIR" "$RUNNER_DIR" > "$RUNNER_DIR/native-config.json"
+
+                      export HARNESS_TI_AGENT_PATH="$AGENT_LINUX_DIR/ti-agent.so"
+                      export TI_AGENT_CONFIG="$RUNNER_DIR/native-config.json"
+
+                      echo "=== Staged unified test agents (from ti-agent-artifacts) ==="
+                      ls -la "$AGENT_LINUX_DIR"
+                      echo "=== Runner config.ini (no writeTo) ==="
+                      cat "$RUNNER_DIR/config.ini"
+
+                      # HCli expects HARNESS_TI_SERVICE_TOKEN to be base64-encoded; Harness CI may inject a raw JWT.
+                      if [ -n "${HARNESS_TI_SERVICE_TOKEN:-}" ]; then
+                        if ! printf '%s' "$HARNESS_TI_SERVICE_TOKEN" | base64 -d >/dev/null 2>&1; then
+                          export HARNESS_TI_SERVICE_TOKEN=$(printf '%s' "$HARNESS_TI_SERVICE_TOKEN" | base64 | tr -d '\n')
+                        fi
+                      fi
+
+                      # Unified path: hcli may still emit java/v2 config_*.ini with writeTo when language is unset.
+                      # Wire the test JVM to our runner config.ini (no writeTo) before surefire forks.
+                      wire_unified_java_agent() {
+                        export JAVA_TOOL_OPTIONS="-javaagent:${AGENT_LINUX_DIR}/java-agent-trampoline.jar=${RUNNER_DIR}/config.ini"
+                        echo "=== JAVA_TOOL_OPTIONS (unified + runner config.ini) ==="
+                        echo "$JAVA_TOOL_OPTIONS"
+                        find "$TI_DATA_DIR" -path '*/ti/v2/java/config/config_*.ini' -type f 2>/dev/null | while IFS= read -r f; do
+                          if grep -qE '^(writeTo|sourceFilesNonNative):' "$f" 2>/dev/null; then
+                            echo "=== Stripping unsupported keys from hcli java config (unused): $f ==="
+                            grep -vE '^(writeTo|sourceFilesNonNative):' "$f" > "${f}.patched" && mv "${f}.patched" "$f"
+                          fi
+                        done
+                      }
+                      export -f wire_unified_java_agent
+                      export TI_DATA_DIR AGENT_LINUX_DIR RUNNER_DIR
+
+                      TEST_EXIT=0
+                      "$HCLI_BIN" htx \
+                        --ti-data-dir="$TI_DATA_DIR" \
+                        --services-file="$TI_DATA_DIR/services.yaml" \
+                        --setup-agents=false \
+                        --stdout \
+                        -- bash -lc 'wire_unified_java_agent; exec mvn -f pom.xml test \
+                           -Dorder.service.url="'"$ORDER_SERVICE_URL"'" \
+                           -Dinventory.service.url="'"$INVENTORY_SERVICE_URL"'" \
+                           -Dshipping.service.url="'"$SHIPPING_SERVICE_URL"'"' \
+                        || TEST_EXIT=$?
+
+                      # Harness CI auto-collects **/*.xml; drop per-class junitreports if any remain.
+                      rm -rf target/surefire-reports/junitreports
+
+                      echo ""
+                      if [ "$TEST_EXIT" -eq 0 ]; then
+                        echo "Tests: PASSED"
+                      else
+                        echo "Tests: FAILED (exit $TEST_EXIT)"
+                      fi
+
+                      echo ""
+                      echo "=== Raw unified CG (agent output) ==="
+                      find "$TI_DATA_DIR" -type f -name 'unified-cg-*.ndjson' 2>/dev/null | sort > /tmp/raw-cg-files.txt || true
+                      if [ ! -s /tmp/raw-cg-files.txt ]; then
+                        echo "  (no unified-cg-*.ndjson under $TI_DATA_DIR)"
+                      else
+                        while IFS= read -r f; do
+                          [ -z "$f" ] && continue
+                          SIZE=$(wc -c < "$f" | tr -d ' ')
+                          LINES=$(wc -l < "$f" | tr -d ' ')
+                          echo "  path:  $f"
+                          echo "  size:  $SIZE bytes"
+                          echo "  lines: $LINES"
+                        done < /tmp/raw-cg-files.txt
+                      fi
+
+                      echo ""
+                      echo "=== Processed IT call graph (stitched + deduped, upload payload) ==="
+                      find "$TI_DATA_DIR" -type f -name 'unified-cg-*.ndjson.stitched.json' 2>/dev/null | sort > /tmp/stitched-cg-files.txt || true
+                      if [ ! -s /tmp/stitched-cg-files.txt ]; then
+                        echo "  (no .stitched.json — rebuild bin/hcli-linux from HCli)"
+                      else
+                        while IFS= read -r f; do
+                          [ -z "$f" ] && continue
+                          echo "  path: $f"
+                          cat "$f"
+                          echo ""
+                        done < /tmp/stitched-cg-files.txt
+                      fi
+
+                      exit "$TEST_EXIT"
+              - step:
+                  type: Run
+                  name: Print runner logs
+                  identifier: print_runner_logs
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      TI_BASE=/harness/ti-it
+                      HCLI_TI_DIR=/harness/hcli-ti
+                      HCLI_CG_DIR="${HARNESS_TI_DATA_DIR:-/root/.hcli/ti-agents}"
+                      for DIR in "$TI_BASE/runner" "$HCLI_TI_DIR" "$HCLI_CG_DIR"; do
+                        find "$DIR" -type f -name '*.log' 2>/dev/null | while IFS= read -r f; do
+                          echo ""
+                          echo "========== $f =========="
+                          cat "$f"
+                        done
+                      done
+                      echo ""
+                      echo "========== Surefire dumpstream =========="
+                      find /harness/target/surefire-reports -name "*.dumpstream" -type f 2>/dev/null | while IFS= read -r f; do
+                        echo "--- $f ---"
+                        cat "$f"
+                      done || echo "(none)"
+                  when:
+                    stageStatus: All
+                    condition: "false"
+              - step:
+                  type: Run
+                  name: Print order logs
+                  identifier: print_order_logs
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      TI_BASE=/harness/ti-it
+                      DIR="$TI_BASE/order"
+                      echo "=== Order log files ==="
+                      ls -la "$DIR"/*.log 2>/dev/null
+                      for f in "$DIR"/*.log; do
+                        [ -f "$f" ] || continue
+                        echo ""
+                        echo "========== $f =========="
+                        cat "$f"
+                      done
+                  when:
+                    stageStatus: All
+                    condition: "false"
+              - step:
+                  type: Run
+                  name: Print inventory logs
+                  identifier: print_inventory_logs
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      TI_BASE=/harness/ti-it
+                      DIR="$TI_BASE/inventory"
+                      echo "=== Inventory log files ==="
+                      ls -la "$DIR"/*.log 2>/dev/null
+                      for f in "$DIR"/*.log; do
+                        [ -f "$f" ] || continue
+                        echo ""
+                        echo "========== $f =========="
+                        cat "$f"
+                      done
+                  when:
+                    stageStatus: All
+                    condition: "false"
+              - step:
+                  type: Run
+                  name: Print shipping logs
+                  identifier: print_shipping_logs
+                  spec:
+                    connectorRef: testingggg
+                    image: eclipse-temurin:17-jre
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      TI_BASE=/harness/ti-it
+                      DIR="$TI_BASE/shipping"
+                      echo "=== Shipping log files ==="
+                      ls -la "$DIR"/*.log 2>/dev/null
+                      for f in "$DIR"/*.log; do
+                        [ -f "$f" ] || continue
+                        echo ""
+                        echo "========== $f =========="
+                        cat "$f"
+                      done
+                  when:
+                    stageStatus: All
+                    condition: "false"
+              - step:
+                  type: Run
+                  name: Print call graphs
+                  identifier: print_cg_contents
+                  spec:
+                    connectorRef: testingggg
+                    image: python:3.12-slim
+                    shell: Sh
+                    command: |-
+                      set -eu
+                      . /harness/ti-agents/ti-data-dir.env
+
+                      echo "=== Processed IT call graph (stitched + deduped) ==="
+                      find "$TI_DATA_DIR" -type f -name 'unified-cg-*.ndjson.stitched.json' 2>/dev/null | sort > /tmp/stitched-cg-files.txt || true
+                      if [ ! -s /tmp/stitched-cg-files.txt ]; then
+                        echo "  (no unified-cg-*.ndjson.stitched.json found under $TI_DATA_DIR)"
+                      else
+                        while IFS= read -r f; do
+                          [ -z "$f" ] && continue
+                          echo "  path: $f"
+                          echo ""
+                          cat "$f"
+                          echo ""
+                        done < /tmp/stitched-cg-files.txt
+                      fi
+          buildIntelligence:
+            enabled: false
+        failureStrategies:
+          - onFailure:
+              errors:
+                - AllErrors
+              action:
+                type: MarkAsFailure
+        variables:
+          - name: DOTNET_SYSTEM_GLOBALIZATION_INVARIANT
+            type: String
+            required: false
+            value: "1"
+  identifier: integration_tests_hcli_enable_agents
+  name: integration tests hcli enable agents
