@@ -222,6 +222,11 @@ pipeline:
                     connectorRef: testingggg
                     image: maven:3.9-eclipse-temurin-17
                     shell: Bash
+                    reports:
+                      type: JUnit
+                      spec:
+                        paths:
+                          - "target/surefire-reports/junitreports/TEST-*.xml"
                     command: |-
                       set -eu
 
@@ -364,8 +369,10 @@ pipeline:
                            -Dshipping.service.url="'"$SHIPPING_SERVICE_URL"'"' \
                         || TEST_EXIT=$?
 
-                      # Harness CI auto-collects **/*.xml; drop per-class junitreports if any remain.
-                      rm -rf target/surefire-reports/junitreports
+                      # Harness CI globs **/*.xml by default. TestNG also writes testng-results.xml
+                      # with the same tests as junitreports/; keep only the JUnit-format per-class files.
+                      rm -f target/surefire-reports/testng-results.xml \
+                        target/surefire-reports/TEST-*.xml
 
                       echo ""
                       if [ "$TEST_EXIT" -eq 0 ]; then
